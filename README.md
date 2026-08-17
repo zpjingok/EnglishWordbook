@@ -4,6 +4,10 @@
 
 ![License: GPL-2.0-only](https://img.shields.io/badge/License-GPL--2.0--only-blue.svg)
 
+## 界面预览
+
+![英语单词簿主界面](assets/interface-overview.png)
+
 ## 功能
 
 - 支持 DeepSeek、阿里百炼云（Qwen Flash）和自定义 OpenAI 兼容接口；API Key 仅保存于当前 Windows 用户的本地配置。
