@@ -48,6 +48,8 @@ public sealed class AppSettings
     public int TransparencyPercent { get; set; } = 88;
     [JsonPropertyName("word_book")]
     public string WordBook { get; set; } = "";
+    [JsonPropertyName("global_hotkey")]
+    public string GlobalHotKey { get; set; } = GlobalHotKeys.DefaultText;
 }
 
 internal static class SettingsStore
@@ -87,6 +89,7 @@ internal static class SettingsStore
         settings.Model = string.IsNullOrWhiteSpace(settings.Model) ? "deepseek-chat" : settings.Model.Trim();
         settings.PromptTemplate = PromptTemplates.Normalize(settings.PromptTemplate);
         settings.WordBook = string.IsNullOrWhiteSpace(settings.WordBook) ? DefaultWordBook : settings.WordBook.Trim();
+        settings.GlobalHotKey = GlobalHotKeys.Normalize(settings.GlobalHotKey);
         settings.AutoFillInput |= settings.LegacyAutoPaste;
         settings.LegacyAutoPaste = false;
         settings.TransparencyPercent = Math.Clamp(settings.TransparencyPercent, 70, 100);
@@ -611,6 +614,7 @@ internal sealed class MainForm : Form
 
     private void OpenSettings()
     {
+        var previousGlobalHotKey = _settings.GlobalHotKey;
         using var dialog = new SettingsForm(_settings, _darkBox.Checked);
         dialog.TopMost = TopMost;
         dialog.Owner = this;
@@ -624,10 +628,12 @@ internal sealed class MainForm : Form
             return;
         dialog.ApplyTo(_settings);
         SettingsStore.Normalize(_settings);
+        if (!TryChangeGlobalHotKey(previousGlobalHotKey, _settings.GlobalHotKey))
+            _settings.GlobalHotKey = previousGlobalHotKey;
         SaveSettings();
         ApplyTransparency();
         UpdateProviderIndicator();
-        SetStatus($"设置已保存：API 供应商为 {_settings.ApiProvider}。");
+        SetStatus($"设置已保存：API 供应商为 {_settings.ApiProvider}；全局快捷键为 {_settings.GlobalHotKey}。");
     }
 
     private string GetChatEndpoint()
@@ -698,9 +704,53 @@ internal sealed class MainForm : Form
     protected override void OnHandleCreated(EventArgs eventArgs)
     {
         base.OnHandleCreated(eventArgs);
-        _globalHotKeyRegistered = Native.RegisterHotKey(Handle, GlobalHotKeyId, Native.ModControl, (uint)Keys.Q);
-        if (!_globalHotKeyRegistered)
-            SetStatus("Ctrl + Q 注册失败：可能已被其他程序占用。");
+        RegisterGlobalHotKey(_settings.GlobalHotKey, showSuccess: false);
+    }
+
+    private bool TryChangeGlobalHotKey(string previousText, string requestedText)
+    {
+        if (string.Equals(previousText, requestedText, StringComparison.Ordinal) && _globalHotKeyRegistered)
+            return true;
+
+        if (_globalHotKeyRegistered)
+        {
+            Native.UnregisterHotKey(Handle, GlobalHotKeyId);
+            _globalHotKeyRegistered = false;
+        }
+
+        if (RegisterGlobalHotKey(requestedText, showSuccess: true))
+            return true;
+
+        var restored = RegisterGlobalHotKey(previousText, showSuccess: false);
+        SetStatus(restored
+            ? $"{requestedText} 注册失败：可能已被其他程序占用，继续使用 {previousText}。"
+            : $"{requestedText} 注册失败，原快捷键 {previousText} 也暂时无法注册。请关闭占用快捷键的程序后重试。" );
+        return false;
+    }
+
+    private bool RegisterGlobalHotKey(string hotKeyText, bool showSuccess)
+    {
+        if (!GlobalHotKeys.TryParse(hotKeyText, out var binding, out _))
+        {
+            SetStatus("全局快捷键设置无效，已使用 Ctrl + Q。");
+            binding = GlobalHotKeys.Default;
+            _settings.GlobalHotKey = binding.Text;
+        }
+
+        _globalHotKeyRegistered = Native.RegisterHotKey(
+            Handle,
+            GlobalHotKeyId,
+            binding.Modifiers | Native.ModNoRepeat,
+            binding.VirtualKey);
+        if (_globalHotKeyRegistered)
+        {
+            if (showSuccess)
+                SetStatus($"全局快捷键已改为 {binding.Text}。" );
+            return true;
+        }
+
+        SetStatus($"{binding.Text} 注册失败：可能已被其他程序占用。" );
+        return false;
     }
 
     protected override void OnHandleDestroyed(EventArgs eventArgs)
@@ -738,20 +788,21 @@ internal sealed class MainForm : Form
 
     private void ToggleMainWindow()
     {
+        var shortcut = _settings.GlobalHotKey;
         if (!Visible)
         {
             RestoreWindow();
-            SetStatus("已通过 Ctrl + Q 调出主界面。");
+            SetStatus($"已通过 {shortcut} 调出主界面。");
         }
         else if (WindowState == FormWindowState.Minimized)
         {
             RestoreWindow();
-            SetStatus("已通过 Ctrl + Q 恢复主界面。");
+            SetStatus($"已通过 {shortcut} 恢复主界面。");
         }
         else
         {
             Hide();
-            SetStatus("已通过 Ctrl + Q 隐藏到系统托盘。");
+            SetStatus($"已通过 {shortcut} 隐藏到系统托盘。");
         }
     }
 
@@ -849,6 +900,7 @@ internal sealed class SettingsForm : Form
         MinimumSize = new Size(0, 130),
     };
     private readonly TextBox _wordBook = new();
+    private readonly TextBox _globalHotKey = new();
     private readonly NumericUpDown _opacity = new() { Minimum = 70, Maximum = 100, Increment = 1 };
     private readonly AppSettings _targetSettings;
 
@@ -862,8 +914,8 @@ internal sealed class SettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(720, 640);
-        MinimumSize = new Size(660, 520);
+        ClientSize = new Size(720, 680);
+        MinimumSize = new Size(660, 560);
         AutoScaleMode = AutoScaleMode.Dpi;
 
         _provider.Items.AddRange([CustomProvider, DeepSeekProvider, AliyunProvider]);
@@ -872,15 +924,16 @@ internal sealed class SettingsForm : Form
         _model.Text = settings.Model;
         _prompt.Text = settings.PromptTemplate;
         _wordBook.Text = settings.WordBook;
+        _globalHotKey.Text = settings.GlobalHotKey;
         _opacity.Value = settings.TransparencyPercent;
         SelectProvider(settings.ApiProvider, settings.ApiBase, settings.Model);
         _provider.SelectedIndexChanged += (_, _) => ApplyProviderPreset();
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 3, RowCount = 10, AutoScroll = true };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 3, RowCount = 12, AutoScroll = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        for (var index = 0; index < 10; index++)
+        for (var index = 0; index < 12; index++)
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         AddField(layout, 0, "API 供应商", _provider);
@@ -889,20 +942,30 @@ internal sealed class SettingsForm : Form
         AddField(layout, 3, "模型 / 引擎", _model);
         AddField(layout, 4, "翻译提示词", _prompt);
         AddField(layout, 5, "Markdown 单词簿", _wordBook, NewButton("选择文件", (_, _) => SelectWordBook()));
-        AddField(layout, 6, "透明度（%）", _opacity);
+        AddField(layout, 6, "全局显示 / 隐藏快捷键", _globalHotKey);
+        AddField(layout, 7, "透明度（%）", _opacity);
+        var hotKeyHint = new Label { Text = "示例：Ctrl + Q、Ctrl + Shift + W。必须包含 Ctrl、Alt、Shift 或 Win；若被占用，将继续使用原快捷键。", AutoSize = true, Margin = new Padding(0, 5, 0, 4) };
+        layout.Controls.Add(hotKeyHint, 0, 8);
+        layout.SetColumnSpan(hotKeyHint, 3);
         var promptHint = new Label { Text = "提示词中的 {source} 会自动替换为当前英文文本；若省略，软件会自动补在末尾。", AutoSize = true, Margin = new Padding(0, 5, 0, 4) };
-        layout.Controls.Add(promptHint, 0, 7);
+        layout.Controls.Add(promptHint, 0, 9);
         layout.SetColumnSpan(promptHint, 3);
         var warning = new Label { Text = "“自动填入输入框”只会在点击英文输入框时读取剪贴板，不会修改剪贴板，也不会向其他程序粘贴。", AutoSize = true, Margin = new Padding(0, 0, 0, 4) };
-        layout.Controls.Add(warning, 0, 8);
+        layout.Controls.Add(warning, 0, 10);
         layout.SetColumnSpan(warning, 3);
         var note = new Label { Text = "API Key 和词库位置仅保存在这台电脑当前用户的本地配置中。", AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
-        layout.Controls.Add(note, 0, 9);
+        layout.Controls.Add(note, 0, 11);
         layout.SetColumnSpan(note, 3);
         var saveButton = NewButton("保存", (_, _) =>
         {
+            if (!GlobalHotKeys.TryParse(_globalHotKey.Text, out _, out var error))
+            {
+                MessageBox.Show(this, error, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                _globalHotKey.Focus();
+                _globalHotKey.SelectAll();
+                return;
+            }
             ApplyTo(_targetSettings);
-            SettingsStore.Save(_targetSettings);
             DialogResult = DialogResult.OK;
             Close();
         });
@@ -941,6 +1004,7 @@ internal sealed class SettingsForm : Form
         settings.ApiKey = _apiKey.Text.Trim();
         settings.PromptTemplate = _prompt.Text;
         settings.WordBook = _wordBook.Text.Trim();
+        settings.GlobalHotKey = GlobalHotKeys.Parse(_globalHotKey.Text).Text;
         settings.TransparencyPercent = Decimal.ToInt32(_opacity.Value);
     }
 
@@ -1047,7 +1111,11 @@ internal sealed class SettingsForm : Form
 internal static class Native
 {
     public const int WmHotKey = 0x0312;
+    public const uint ModAlt = 0x0001;
     public const uint ModControl = 0x0002;
+    public const uint ModShift = 0x0004;
+    public const uint ModWin = 0x0008;
+    public const uint ModNoRepeat = 0x4000;
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -1057,6 +1125,115 @@ internal static class Native
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool UnregisterHotKey(IntPtr windowHandle, int id);
 
+}
+
+internal readonly record struct GlobalHotKeyBinding(uint Modifiers, uint VirtualKey, string Text);
+
+internal static class GlobalHotKeys
+{
+    public const string DefaultText = "Ctrl + Q";
+    public static readonly GlobalHotKeyBinding Default = new(Native.ModControl, (uint)Keys.Q, DefaultText);
+
+    public static string Normalize(string? text) => TryParse(text, out var binding, out _) ? binding.Text : DefaultText;
+
+    public static GlobalHotKeyBinding Parse(string? text) => TryParse(text, out var binding, out _) ? binding : Default;
+
+    public static bool TryParse(string? text, out GlobalHotKeyBinding binding, out string error)
+    {
+        binding = Default;
+        error = "";
+        var parts = (text ?? "").Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            error = "全局快捷键格式不正确。请使用例如 Ctrl + Q 或 Ctrl + Shift + W 的格式。";
+            return false;
+        }
+
+        uint modifiers = 0;
+        Keys key = Keys.None;
+        foreach (var part in parts)
+        {
+            switch (part.Trim().ToUpperInvariant())
+            {
+                case "CTRL":
+                case "CONTROL":
+                    if (!AddModifier(ref modifiers, Native.ModControl, out error)) return false;
+                    continue;
+                case "ALT":
+                    if (!AddModifier(ref modifiers, Native.ModAlt, out error)) return false;
+                    continue;
+                case "SHIFT":
+                    if (!AddModifier(ref modifiers, Native.ModShift, out error)) return false;
+                    continue;
+                case "WIN":
+                case "WINDOWS":
+                    if (!AddModifier(ref modifiers, Native.ModWin, out error)) return false;
+                    continue;
+            }
+
+            if (key != Keys.None || !TryParseKey(part, out key))
+            {
+                error = "全局快捷键只能包含一个主按键，例如 Q、1、F2 或 Space。";
+                return false;
+            }
+        }
+
+        if (modifiers == 0)
+        {
+            error = "全局快捷键必须包含 Ctrl、Alt、Shift 或 Win 中的至少一个修饰键，避免拦截普通输入。";
+            return false;
+        }
+        if (key == Keys.None)
+        {
+            error = "全局快捷键缺少主按键。";
+            return false;
+        }
+
+        var labels = new List<string>();
+        if ((modifiers & Native.ModControl) != 0) labels.Add("Ctrl");
+        if ((modifiers & Native.ModAlt) != 0) labels.Add("Alt");
+        if ((modifiers & Native.ModShift) != 0) labels.Add("Shift");
+        if ((modifiers & Native.ModWin) != 0) labels.Add("Win");
+        labels.Add(FormatKey(key));
+        binding = new GlobalHotKeyBinding(modifiers, (uint)key, string.Join(" + ", labels));
+        return true;
+    }
+
+    private static bool AddModifier(ref uint modifiers, uint modifier, out string error)
+    {
+        if ((modifiers & modifier) == 0)
+        {
+            modifiers |= modifier;
+            error = "";
+            return true;
+        }
+        error = "全局快捷键中包含重复的修饰键。";
+        return false;
+    }
+
+    private static bool TryParseKey(string text, out Keys key)
+    {
+        key = Keys.None;
+        var trimmed = text.Trim();
+        if (trimmed.Length == 1 && char.IsLetter(trimmed[0]))
+        {
+            key = (Keys)char.ToUpperInvariant(trimmed[0]);
+            return true;
+        }
+        if (trimmed.Length == 1 && char.IsDigit(trimmed[0]))
+        {
+            key = (Keys)((int)Keys.D0 + (trimmed[0] - '0'));
+            return true;
+        }
+        if (!Enum.TryParse(trimmed, true, out key))
+            return false;
+        key &= Keys.KeyCode;
+        return key is not (Keys.None or Keys.ControlKey or Keys.ShiftKey or Keys.Menu or Keys.LWin or Keys.RWin);
+    }
+
+    private static string FormatKey(Keys key) => key is >= Keys.D0 and <= Keys.D9
+        ? ((int)key - (int)Keys.D0).ToString()
+        : key.ToString();
 }
 
 internal static class AppIcon

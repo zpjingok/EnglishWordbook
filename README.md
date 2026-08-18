@@ -12,7 +12,7 @@
 
 - 支持 DeepSeek、阿里百炼云（Qwen Flash）和自定义 OpenAI 兼容接口；API Key 仅保存于当前 Windows 用户的本地配置。
 - 支持剪贴板监听、自动翻译、仅在本程序输入框内生效的“自动填入输入框”。
-- 支持 `Enter` 翻译、`Shift + Enter` 换行、窗口内 `Ctrl + S` 保存 Markdown，以及全局 `Ctrl + Q` 显示或隐藏主窗口。
+- 支持 `Enter` 翻译、`Shift + Enter` 换行、窗口内 `Ctrl + S` 保存 Markdown；全局显示 / 隐藏快捷键可在设置中自定义，默认 `Ctrl + Q`。
 - 支持暗黑模式、透明模式、始终置顶、可拖动的上下编辑区和 Windows 本机英语发音。
 - 所有供应商的学习记录保存到同一个本地 Markdown 文件；保存时不重复写入“原文”小节。
 
