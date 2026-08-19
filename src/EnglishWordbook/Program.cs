@@ -99,7 +99,8 @@ internal static class SettingsStore
 
 internal static class PromptTemplates
 {
-    public const string Default = """
+    // 仅用于把从前未改动过的内置提示词平滑升级为新版；用户自定义提示词不受影响。
+    public const string LegacyDefault = """
 You are an English teacher for Chinese learners. Explain the English text below in concise Simplified Chinese.
 
 English text:
@@ -115,8 +116,55 @@ For a full sentence or paragraph, provide a natural Chinese translation, then ex
 Do not greet the user, do not ask for more text, do not invent information, and use Markdown headings and bullets where helpful.
 """;
 
-    public static string Normalize(string? template) =>
-        string.IsNullOrWhiteSpace(template) ? Default : template.Trim();
+    // 2026-08-19 的前一版默认提示词；用于升级已保存但从未手动编辑的默认值。
+    public const string PreviousDefault = """
+You are an English teacher for Chinese learners. Explain the English text below in concise Simplified Chinese.
+
+English text:
+{source}
+
+For a word, phrase, or expression, root or affix (词根/词缀),, use exactly these sections:
+【核心意思】
+【常见用法】
+【同义/相近的英文单词或短语】
+【相关单词】
+【例句】
+【易错点】 (only when useful)
+
+For a full sentence or paragraph, provide a natural Chinese translation, then explain the 1-3 most useful expressions or grammar points.
+Do not greet the user, do not ask for more text, do not invent information, and use Markdown headings and bullets where helpful.
+""";
+
+    public const string Default = """
+You are an English teacher for Chinese learners. Explain the English text below in concise Simplified Chinese.
+
+English text:
+{source}
+
+For a word, phrase, or expression, root or affix (词根/词缀), use exactly these sections:
+【核心意思】
+【常见用法】
+【同义/相近的英文单词或短语】
+【相关单词】
+【例句】
+【易错点】 (only when useful)
+
+For a full sentence or paragraph, provide a natural Chinese translation. Then, explicitly extract and explain the 1-3 most useful expressions, grammar points, and commonly used fixed collocations (常用的固定搭配和用法). Format the collocations clearly, for example:
+固定搭配：[English collocation] - [Chinese meaning]
+
+Do not greet the user, do not ask for more text, do not invent information, and use Markdown headings and bullets where helpful.
+""";
+
+    public static string Normalize(string? template)
+    {
+        if (string.IsNullOrWhiteSpace(template)) return Default;
+
+        var normalized = template.Trim();
+        return string.Equals(normalized, LegacyDefault.Trim(), StringComparison.Ordinal)
+            || string.Equals(normalized, PreviousDefault.Trim(), StringComparison.Ordinal)
+            ? Default
+            : normalized;
+    }
 
     public static string Render(string? template, string source)
     {
@@ -505,6 +553,8 @@ internal sealed class MainForm : Form
             _result.Text = translated;
             _saveButton.Enabled = true;
             SetStatus($"{_settings.ApiProvider} 翻译完成，可保存到 Markdown。");
+            _source.Focus();
+            _source.SelectAll();
         }
         catch (Exception error)
         {
