@@ -175,6 +175,24 @@ Do not greet the user, do not ask for more text, do not invent information, and 
     }
 }
 
+// RichTextBox 默认会保留剪贴板 RTF 的字体和字号。英文输入区只接收纯文本，
+// 以保证手动输入和从其他程序粘贴的文字始终使用同一套界面字体。
+internal sealed class PlainTextRichTextBox : RichTextBox
+{
+    private const int WmPaste = 0x0302;
+
+    protected override void WndProc(ref Message message)
+    {
+        if (message.Msg == WmPaste && Clipboard.ContainsText(TextDataFormat.UnicodeText))
+        {
+            SelectedText = Clipboard.GetText(TextDataFormat.UnicodeText);
+            return;
+        }
+
+        base.WndProc(ref message);
+    }
+}
+
 internal sealed class MainForm : Form
 {
     private const int GlobalHotKeyId = 0x4557;
@@ -182,7 +200,7 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _clipboardTimer = new() { Interval = 700 };
     private readonly NotifyIcon _trayIcon = new();
     private readonly Icon _appIcon = AppIcon.Create();
-    private readonly RichTextBox _source = new();
+    private readonly PlainTextRichTextBox _source = new();
     private readonly RichTextBox _result = new();
     private readonly Label _status = new();
     private readonly Label _providerStatus = new();
@@ -385,6 +403,7 @@ internal sealed class MainForm : Form
 
     private static void ConfigureEditor(RichTextBox editor, bool readOnly)
     {
+        editor.Font = new Font("Microsoft YaHei", 9f, FontStyle.Regular, GraphicsUnit.Point);
         editor.Dock = DockStyle.Fill;
         editor.ReadOnly = readOnly;
         editor.BorderStyle = BorderStyle.FixedSingle;
@@ -580,7 +599,8 @@ internal sealed class MainForm : Form
             var wordBook = _settings.WordBook;
             Directory.CreateDirectory(Path.GetDirectoryName(wordBook) ?? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
             var title = string.Join(' ', _source.Lines.Where(line => !string.IsNullOrWhiteSpace(line))).Trim();
-            var entry = $"\n## {title}\n\n- 保存时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}\n\n### 翻译与讲解\n\n{_result.Text.Trim()}\n\n---\n";
+            var learningNotes = RemoveLeadingSourceEcho(_result.Text, title);
+            var entry = $"\n## {title}\n\n- 保存时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}\n\n### 翻译与讲解\n\n{learningNotes}\n\n---\n";
             File.AppendAllText(wordBook, entry, Encoding.UTF8);
             SetStatus($"已保存到：{wordBook}");
         }
@@ -588,6 +608,27 @@ internal sealed class MainForm : Form
         {
             MessageBox.Show(this, error.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private static string RemoveLeadingSourceEcho(string result, string source)
+    {
+        var lines = result.Replace("\r\n", "\n").Split('\n').ToList();
+        var firstContentIndex = lines.FindIndex(line => !string.IsNullOrWhiteSpace(line));
+        if (firstContentIndex < 0)
+            return result.Trim();
+
+        var firstLine = lines[firstContentIndex].Trim();
+        var normalizedFirstLine = firstLine
+            .TrimStart('#', '>', '-', '*', ' ')
+            .Trim(' ', '*', '_', '`');
+
+        if (!string.Equals(normalizedFirstLine, source.Trim(), StringComparison.OrdinalIgnoreCase))
+            return result.Trim();
+
+        lines.RemoveAt(firstContentIndex);
+        while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[0]))
+            lines.RemoveAt(0);
+        return string.Join(Environment.NewLine, lines).Trim();
     }
 
     private void SpeakSource()
