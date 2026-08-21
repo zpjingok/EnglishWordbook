@@ -181,6 +181,12 @@ internal sealed class PlainTextRichTextBox : RichTextBox
 {
     private const int WmPaste = 0x0302;
 
+    protected override void OnTextChanged(EventArgs e)
+    {
+        base.OnTextChanged(e);
+        NormalizeCharacterFormatting();
+    }
+
     protected override void WndProc(ref Message message)
     {
         if (message.Msg == WmPaste && Clipboard.ContainsText(TextDataFormat.UnicodeText))
@@ -190,6 +196,20 @@ internal sealed class PlainTextRichTextBox : RichTextBox
         }
 
         base.WndProc(ref message);
+    }
+
+    private void NormalizeCharacterFormatting()
+    {
+        if (TextLength == 0 || IsDisposed)
+            return;
+
+        var selectionStart = SelectionStart;
+        var selectionLength = SelectionLength;
+        SelectAll();
+        SelectionFont = Font;
+        SelectionColor = ForeColor;
+        SelectionStart = Math.Min(selectionStart, TextLength);
+        SelectionLength = Math.Min(selectionLength, TextLength - SelectionStart);
     }
 }
 
@@ -321,6 +341,7 @@ internal sealed class MainForm : Form
         sourceArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         sourceArea.Controls.Add(NewSectionLabel("英文单词、短语或句子"), 0, 0);
         ConfigureEditor(_source, readOnly: false);
+        _source.Font = new Font("Arial", 12f, FontStyle.Regular, GraphicsUnit.Point);
         sourceArea.Controls.Add(_source, 0, 1);
         split.Panel1.Controls.Add(sourceArea);
 
