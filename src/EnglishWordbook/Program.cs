@@ -785,7 +785,7 @@ internal sealed class MainForm : Form
             var wordBook = _settings.WordBook;
             Directory.CreateDirectory(Path.GetDirectoryName(wordBook) ?? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
             var title = string.Join(' ', _source.Lines.Where(line => !string.IsNullOrWhiteSpace(line))).Trim();
-            var learningNotes = RemoveLeadingSourceEcho(_result.Text, title);
+            var learningNotes = RemoveModeRoutingHeader(RemoveLeadingSourceEcho(_result.Text, title));
             var entry = $"\n## {title}\n\n- 保存时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}\n\n### 翻译与讲解\n\n{learningNotes}\n\n---\n";
             File.AppendAllText(wordBook, entry, Encoding.UTF8);
             SetStatus($"已保存到：{wordBook}");
@@ -815,6 +815,20 @@ internal sealed class MainForm : Form
         while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[0]))
             lines.RemoveAt(0);
         return string.Join(Environment.NewLine, lines).Trim();
+    }
+
+    private static string RemoveModeRoutingHeader(string result)
+    {
+        var lines = result.Replace("\r\n", "\n").Split('\n');
+        var filtered = lines.Where(line =>
+        {
+            var normalized = line.Trim().TrimStart('#', '>', '-', '*', ' ').Trim(' ', '*', '_', '`');
+            return !normalized.StartsWith("Mode A — word, idiom, or short phrase", StringComparison.OrdinalIgnoreCase)
+                && !normalized.StartsWith("Mode B — sentence, clause, or paragraph", StringComparison.OrdinalIgnoreCase)
+                && !normalized.StartsWith("Mode A - word, idiom, or short phrase", StringComparison.OrdinalIgnoreCase)
+                && !normalized.StartsWith("Mode B - sentence, clause, or paragraph", StringComparison.OrdinalIgnoreCase);
+        });
+        return string.Join(Environment.NewLine, filtered).Trim();
     }
 
     private void SpeakSource()
