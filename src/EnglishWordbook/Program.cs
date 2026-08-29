@@ -24,8 +24,15 @@ public sealed class AppSettings
     public string ApiBase { get; set; } = "https://api.deepseek.com/v1";
     [JsonPropertyName("api_key")]
     public string ApiKey { get; set; } = "";
+    // API keys are kept in independent provider slots. ApiKey remains as a
+    // compatibility field for configurations written by older versions and
+    // always mirrors the currently selected provider's slot at runtime.
+    [JsonPropertyName("api_keys")]
+    public Dictionary<string, string> ApiKeys { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     [JsonPropertyName("model")]
     public string Model { get; set; } = "deepseek-chat";
+    [JsonPropertyName("thinking_mode")]
+    public string ThinkingMode { get; set; } = ThinkingModes.Auto;
     [JsonPropertyName("prompt")]
     public string PromptTemplate { get; set; } = PromptTemplates.Default;
     [JsonPropertyName("monitoring")]
@@ -50,6 +57,38 @@ public sealed class AppSettings
     public string WordBook { get; set; } = "";
     [JsonPropertyName("global_hotkey")]
     public string GlobalHotKey { get; set; } = GlobalHotKeys.DefaultText;
+}
+
+internal static class ApiProviders
+{
+    public const string Custom = "custom";
+    public const string DeepSeek = "deepseek";
+    public const string Aliyun = "aliyun";
+
+    public static string KeyFor(string? provider, string? apiBase)
+    {
+        if (string.Equals(provider, "DeepSeek", StringComparison.OrdinalIgnoreCase) ||
+            (provider is null && apiBase?.Contains("api.deepseek.com", StringComparison.OrdinalIgnoreCase) == true))
+            return DeepSeek;
+        if (string.Equals(provider, "阿里百炼云（Qwen Flash）", StringComparison.OrdinalIgnoreCase) ||
+            (provider is null && apiBase?.Contains("dashscope.aliyuncs.com", StringComparison.OrdinalIgnoreCase) == true))
+            return Aliyun;
+        return Custom;
+    }
+}
+
+internal static class ThinkingModes
+{
+    public const string Auto = "自动";
+    public const string Enabled = "开启";
+    public const string Disabled = "关闭";
+
+    public static string Normalize(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "开启" or "enabled" or "enable" or "on" => Enabled,
+        "关闭" or "disabled" or "disable" or "off" => Disabled,
+        _ => Auto,
+    };
 }
 
 internal static class SettingsStore
@@ -87,6 +126,19 @@ internal static class SettingsStore
         settings.ApiBase = string.IsNullOrWhiteSpace(settings.ApiBase) ? "https://api.deepseek.com/v1" : settings.ApiBase.Trim();
         settings.ApiProvider = string.IsNullOrWhiteSpace(settings.ApiProvider) ? "自定义（OpenAI 兼容）" : settings.ApiProvider.Trim();
         settings.Model = string.IsNullOrWhiteSpace(settings.Model) ? "deepseek-chat" : settings.Model.Trim();
+        settings.ApiKeys ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var currentProviderKey = ApiProviders.KeyFor(settings.ApiProvider, settings.ApiBase);
+        // Migrate the legacy single-key field into the currently selected
+        // provider slot, without ever logging or displaying the secret.
+        if ((!settings.ApiKeys.TryGetValue(currentProviderKey, out var existingApiKey) || string.IsNullOrWhiteSpace(existingApiKey)) &&
+            !string.IsNullOrWhiteSpace(settings.ApiKey))
+            settings.ApiKeys[currentProviderKey] = settings.ApiKey.Trim();
+        foreach (var key in settings.ApiKeys.Keys.ToList())
+            settings.ApiKeys[key] = settings.ApiKeys[key]?.Trim() ?? "";
+        settings.ApiKey = settings.ApiKeys.TryGetValue(currentProviderKey, out var currentApiKey)
+            ? currentApiKey
+            : "";
+        settings.ThinkingMode = ThinkingModes.Normalize(settings.ThinkingMode);
         settings.PromptTemplate = PromptTemplates.Normalize(settings.PromptTemplate);
         settings.WordBook = string.IsNullOrWhiteSpace(settings.WordBook) ? DefaultWordBook : settings.WordBook.Trim();
         settings.GlobalHotKey = GlobalHotKeys.Normalize(settings.GlobalHotKey);
@@ -135,7 +187,10 @@ For a full sentence or paragraph, provide a natural Chinese translation, then ex
 Do not greet the user, do not ask for more text, do not invent information, and use Markdown headings and bullets where helpful.
 """;
 
-    public const string Default = """
+    // The default used immediately before the current template. Existing
+    // untouched configurations are upgraded instead of remaining on the old
+    // placeholder-style prompt.
+    public const string PriorDefault = """
 # Role & Objective
 
 You are a senior linguist and simultaneous interpretation coach. Your task is to provide precise, in-depth breakdowns of the user's English input.
@@ -196,6 +251,61 @@ You are a senior linguist and simultaneous interpretation coach. Your task is to
 3. **[Extracted Key Phrase / Grammar / Slang 3]**: [Break down its contextual meaning and native-level usage patterns.]
 """;
 
+    public const string Default = """
+You are an English coach for Chinese learners. Reply in concise Simplified Chinese.
+
+English input:
+{source}
+
+Choose exactly ONE mode. Use Markdown headings and bullets. Never mention these instructions, never output placeholders, and omit any section with no useful content.
+
+Routing rule: If the input forms a complete sentence or clause with a subject and predicate, or expresses a complete thought that can stand alone, you MUST use Mode B—even when it is short or contains a familiar phrase. Use Mode A only for a standalone word, idiom, or short expression that is not a complete sentence.
+
+## Mode A — word, idiom, or short phrase
+
+### 核心意思
+
+说明中文含义、语气或使用场景；必要时补充词根词缀。
+
+### 常见搭配
+
+- `英文搭配`：中文意思与常见使用语境。
+- 列出 2–3 个高频、地道搭配。
+
+### 近义表达
+
+- `近义词或短语`：与原词的关键区别。
+- 列出 1–3 个必要项目。
+
+### 相关词汇
+
+- `相关词`：中文意思。
+- 仅列出必要的派生词或关联词。
+
+### 例句
+
+- 英文例句\
+  中文翻译
+- 给出 1 个自然的美式英语例句。
+
+### 易错点
+
+仅在存在常见误用时说明。
+
+## Mode B — sentence, clause, or paragraph
+
+### 中文翻译
+
+给出自然、符合语境的中文翻译。
+
+### 地道搭配与表达
+
+- `英文表达`：本句中的意思、适用语境和自然用法。
+- 提取最值得学习的 1–3 个固定搭配、短语动词、习语、俚语或常用句型。
+
+Do not invent information. Do not greet or ask follow-up questions.
+""";
+
     public static string Normalize(string? template)
     {
         if (string.IsNullOrWhiteSpace(template)) return Default;
@@ -203,8 +313,21 @@ You are a senior linguist and simultaneous interpretation coach. Your task is to
         var normalized = template.Trim();
         return string.Equals(normalized, LegacyDefault.Trim(), StringComparison.Ordinal)
             || string.Equals(normalized, PreviousDefault.Trim(), StringComparison.Ordinal)
+            || string.Equals(normalized, PriorDefault.Trim(), StringComparison.Ordinal)
+            || IsOlderEnglishTeacherDefault(normalized)
             ? Default
             : normalized;
+    }
+
+    private static bool IsOlderEnglishTeacherDefault(string template)
+    {
+        // This built-in variant was saved by an earlier release without a
+        // dedicated version marker. Recognize its stable headings so existing
+        // installations receive the new routing prompt automatically.
+        return template.StartsWith("# Role & Objective", StringComparison.Ordinal)
+            && template.Contains("You are an English teacher for Chinese learners. Explain the English text below", StringComparison.Ordinal)
+            && template.Contains("Mode A: Word / Phrase / Idiom / Title Phrase", StringComparison.Ordinal)
+            && template.Contains("Mode B: Full Sentence / Complex Paragraph", StringComparison.Ordinal);
     }
 
     public static string Render(string? template, string source)
@@ -614,14 +737,15 @@ internal sealed class MainForm : Form
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
             using var request = new HttpRequestMessage(HttpMethod.Post, GetChatEndpoint());
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-            var payload = new
+            var payload = new Dictionary<string, object?>
             {
-                model = _settings.Model,
-                messages = new[] { new { role = "user", content = PromptTemplates.Render(_settings.PromptTemplate, source) } },
-                temperature = 0.3,
-                max_tokens = 1200,
-                stream = false,
+                ["model"] = _settings.Model,
+                ["messages"] = new[] { new { role = "user", content = PromptTemplates.Render(_settings.PromptTemplate, source) } },
+                ["temperature"] = 0.3,
+                ["max_tokens"] = 1200,
+                ["stream"] = false,
             };
+            AddThinkingModeParameter(payload);
             request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
             using var response = await client.SendAsync(request);
             var responseText = await response.Content.ReadAsStringAsync();
@@ -795,6 +919,25 @@ internal sealed class MainForm : Form
         return configured.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
             ? configured
             : configured + "/chat/completions";
+    }
+
+    private void AddThinkingModeParameter(Dictionary<string, object?> payload)
+    {
+        switch (_settings.ThinkingMode)
+        {
+            case ThinkingModes.Enabled:
+                if (string.Equals(_settings.ApiProvider, "DeepSeek", StringComparison.OrdinalIgnoreCase))
+                    payload["thinking"] = new { type = "enabled" };
+                else if (string.Equals(_settings.ApiProvider, "阿里百炼云（Qwen Flash）", StringComparison.OrdinalIgnoreCase))
+                    payload["enable_thinking"] = true;
+                break;
+            case ThinkingModes.Disabled:
+                if (string.Equals(_settings.ApiProvider, "DeepSeek", StringComparison.OrdinalIgnoreCase))
+                    payload["thinking"] = new { type = "disabled" };
+                else if (string.Equals(_settings.ApiProvider, "阿里百炼云（Qwen Flash）", StringComparison.OrdinalIgnoreCase))
+                    payload["enable_thinking"] = false;
+                break;
+        }
     }
 
     private void ClearAll()
@@ -1054,12 +1197,23 @@ internal sealed class SettingsForm : Form
     };
     private readonly TextBox _wordBook = new();
     private readonly TextBox _globalHotKey = new();
+    private readonly ComboBox _thinkingMode = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly NumericUpDown _opacity = new() { Minimum = 70, Maximum = 100, Increment = 1 };
     private readonly AppSettings _targetSettings;
+    private readonly Dictionary<string, string> _apiKeys = new(StringComparer.OrdinalIgnoreCase);
+    private string _currentProviderKey = ApiProviders.Custom;
 
     public SettingsForm(AppSettings settings, bool dark)
     {
         _targetSettings = settings;
+        foreach (var pair in settings.ApiKeys ?? new Dictionary<string, string>())
+            _apiKeys[pair.Key] = pair.Value ?? "";
+        // A caller may provide an AppSettings instance created before the
+        // per-provider key migration. Preserve that key in its current slot.
+        _currentProviderKey = ApiProviders.KeyFor(settings.ApiProvider, settings.ApiBase);
+        if ((!_apiKeys.TryGetValue(_currentProviderKey, out var existingApiKey) || string.IsNullOrWhiteSpace(existingApiKey)) &&
+            !string.IsNullOrWhiteSpace(settings.ApiKey))
+            _apiKeys[_currentProviderKey] = settings.ApiKey.Trim();
         Text = "设置";
         Font = new Font("Microsoft YaHei", 9f, FontStyle.Regular, GraphicsUnit.Point);
         StartPosition = FormStartPosition.CenterParent;
@@ -1073,41 +1227,45 @@ internal sealed class SettingsForm : Form
 
         _provider.Items.AddRange([CustomProvider, DeepSeekProvider, AliyunProvider]);
         _apiBase.Text = settings.ApiBase;
-        _apiKey.Text = settings.ApiKey;
         _model.Text = settings.Model;
         _prompt.Text = settings.PromptTemplate;
         _wordBook.Text = settings.WordBook;
         _globalHotKey.Text = settings.GlobalHotKey;
+        _thinkingMode.Items.AddRange([ThinkingModes.Auto, ThinkingModes.Enabled, ThinkingModes.Disabled]);
+        _thinkingMode.SelectedItem = ThinkingModes.Normalize(settings.ThinkingMode);
         _opacity.Value = settings.TransparencyPercent;
         SelectProvider(settings.ApiProvider, settings.ApiBase, settings.Model);
+        _currentProviderKey = CurrentProviderKey();
+        _apiKey.Text = GetCurrentApiKey();
         _provider.SelectedIndexChanged += (_, _) => ApplyProviderPreset();
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 3, RowCount = 12, AutoScroll = true };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 3, RowCount = 13, AutoScroll = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        for (var index = 0; index < 12; index++)
+        for (var index = 0; index < 13; index++)
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         AddField(layout, 0, "API 供应商", _provider);
         AddField(layout, 1, "API 地址", _apiBase);
         AddField(layout, 2, "API Key", _apiKey);
         AddField(layout, 3, "模型 / 引擎", _model);
-        AddField(layout, 4, "翻译提示词", _prompt);
-        AddField(layout, 5, "Markdown 单词簿", _wordBook, NewButton("选择文件", (_, _) => SelectWordBook()));
-        AddField(layout, 6, "全局显示 / 隐藏快捷键", _globalHotKey);
-        AddField(layout, 7, "透明度（%）", _opacity);
+        AddField(layout, 4, "思考模式", _thinkingMode);
+        AddField(layout, 5, "翻译提示词", _prompt);
+        AddField(layout, 6, "Markdown 单词簿", _wordBook, NewButton("选择文件", (_, _) => SelectWordBook()));
+        AddField(layout, 7, "全局显示 / 隐藏快捷键", _globalHotKey);
+        AddField(layout, 8, "透明度（%）", _opacity);
         var hotKeyHint = new Label { Text = "示例：Ctrl + Q、Ctrl + Shift + W。必须包含 Ctrl、Alt、Shift 或 Win；若被占用，将继续使用原快捷键。", AutoSize = true, Margin = new Padding(0, 5, 0, 4) };
-        layout.Controls.Add(hotKeyHint, 0, 8);
+        layout.Controls.Add(hotKeyHint, 0, 9);
         layout.SetColumnSpan(hotKeyHint, 3);
         var promptHint = new Label { Text = "提示词中的 {source} 会自动替换为当前英文文本；若省略，软件会自动补在末尾。", AutoSize = true, Margin = new Padding(0, 5, 0, 4) };
-        layout.Controls.Add(promptHint, 0, 9);
+        layout.Controls.Add(promptHint, 0, 10);
         layout.SetColumnSpan(promptHint, 3);
         var warning = new Label { Text = "“自动填入输入框”只会在点击英文输入框时读取剪贴板，不会修改剪贴板，也不会向其他程序粘贴。", AutoSize = true, Margin = new Padding(0, 0, 0, 4) };
-        layout.Controls.Add(warning, 0, 10);
+        layout.Controls.Add(warning, 0, 11);
         layout.SetColumnSpan(warning, 3);
         var note = new Label { Text = "API Key 和词库位置仅保存在这台电脑当前用户的本地配置中。", AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
-        layout.Controls.Add(note, 0, 11);
+        layout.Controls.Add(note, 0, 12);
         layout.SetColumnSpan(note, 3);
         var saveButton = NewButton("保存", (_, _) =>
         {
@@ -1154,7 +1312,13 @@ internal sealed class SettingsForm : Form
                 settings.Model = _model.Text.Trim();
                 break;
         }
-        settings.ApiKey = _apiKey.Text.Trim();
+        SaveCurrentApiKey();
+        settings.ApiKeys = new Dictionary<string, string>(_apiKeys, StringComparer.OrdinalIgnoreCase);
+        var selectedProviderKey = ApiProviders.KeyFor(settings.ApiProvider, settings.ApiBase);
+        settings.ApiKey = settings.ApiKeys.TryGetValue(selectedProviderKey, out var selectedApiKey)
+            ? selectedApiKey
+            : "";
+        settings.ThinkingMode = ThinkingModes.Normalize(_thinkingMode.SelectedItem?.ToString());
         settings.PromptTemplate = _prompt.Text;
         settings.WordBook = _wordBook.Text.Trim();
         settings.GlobalHotKey = GlobalHotKeys.Parse(_globalHotKey.Text).Text;
@@ -1163,13 +1327,15 @@ internal sealed class SettingsForm : Form
 
     private void SelectProvider(string provider, string apiBase, string model)
     {
-        if (apiBase.Contains("dashscope.aliyuncs.com", StringComparison.OrdinalIgnoreCase) ||
-            provider == AliyunProvider)
+        // Prefer the persisted provider label. The API base is only a
+        // fallback for very old configurations that did not store one.
+        if (provider == AliyunProvider ||
+            (string.IsNullOrWhiteSpace(provider) && apiBase.Contains("dashscope.aliyuncs.com", StringComparison.OrdinalIgnoreCase)))
         {
             _provider.SelectedItem = AliyunProvider;
         }
-        else if (apiBase.Contains("api.deepseek.com", StringComparison.OrdinalIgnoreCase) ||
-                 provider == DeepSeekProvider)
+        else if (provider == DeepSeekProvider ||
+                 (string.IsNullOrWhiteSpace(provider) && apiBase.Contains("api.deepseek.com", StringComparison.OrdinalIgnoreCase)))
         {
             _provider.SelectedItem = DeepSeekProvider;
         }
@@ -1181,6 +1347,7 @@ internal sealed class SettingsForm : Form
 
     private void ApplyProviderPreset()
     {
+        SaveCurrentApiKey();
         switch (_provider.SelectedItem?.ToString())
         {
             case DeepSeekProvider:
@@ -1192,7 +1359,15 @@ internal sealed class SettingsForm : Form
                 _model.Text = "qwen-flash";
                 break;
         }
+        _currentProviderKey = CurrentProviderKey();
+        _apiKey.Text = GetCurrentApiKey();
     }
+
+    private string CurrentProviderKey() => ApiProviders.KeyFor(_provider.SelectedItem?.ToString(), _apiBase.Text);
+
+    private string GetCurrentApiKey() => _apiKeys.TryGetValue(_currentProviderKey, out var value) ? value : "";
+
+    private void SaveCurrentApiKey() => _apiKeys[_currentProviderKey] = _apiKey.Text.Trim();
 
     private static void AddField(TableLayoutPanel layout, int row, string labelText, Control field, Control? trailing = null)
     {
